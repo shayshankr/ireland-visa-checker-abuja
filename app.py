@@ -65,8 +65,10 @@ def validate_input(raw: str) -> tuple[bool, str, str]:
 
 
 def parse_pdf(content: bytes) -> pd.DataFrame:
-    """Extract all Application Number / Decision rows from a PDF."""
+    """Parse PDF — tries text extraction first, falls back to OCR for scanned/image PDFs."""
     rows = []
+
+    # ── Attempt 1: pdfplumber table extraction (text-based PDFs) ──────────────
     with pdfplumber.open(BytesIO(content)) as pdf:
         for page in pdf.pages:
             for table in page.extract_tables():
@@ -80,6 +82,35 @@ def parse_pdf(content: bytes) -> pd.DataFrame:
                     if decision.lower() in ("decision", "", "none"):
                         continue
                     rows.append({"Application Number": app_num, "Decision": decision})
+
+    if rows:
+        return pd.DataFrame(rows)
+
+    # ── Attempt 2: OCR fallback for image/scanned PDFs ────────────────────────
+    try:
+        import fitz
+        import pytesseract
+        from PIL import Image
+        import io as _io
+        import re
+
+        doc = fitz.open(stream=content, filetype="pdf")
+        for page in doc:
+            mat = fitz.Matrix(2.5, 2.5)
+            pix = page.get_pixmap(matrix=mat)
+            img = Image.open(_io.BytesIO(pix.tobytes("png")))
+            text = pytesseract.image_to_string(img, config="--psm 6")
+            for line in text.splitlines():
+                line = line.strip()
+                m = re.match(r'^(\d{7,9})\s+(Approved|Refused|Granted|Rejected)', line, re.IGNORECASE)
+                if m:
+                    rows.append({
+                        "Application Number": m.group(1),
+                        "Decision": m.group(2).capitalize()
+                    })
+    except Exception:
+        pass
+
     return pd.DataFrame(rows)
 
 
